@@ -6,7 +6,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -18,21 +21,22 @@ import { distanceKm, estimateEtaMinutes } from "../utils/eta";
 /* 🔗 BACKEND (AUTO) */
 const expoHost = Constants.expoConfig?.hostUri ?? "";
 const derivedHost = expoHost.replace(/^exp:\/\//, "").split(":")[0];
+const API_BASE = derivedHost
+  ? `http://${derivedHost}:3000`
+  : "http://localhost:3000";
 
-const API_BASE = derivedHost ? `http://${derivedHost}:3000` : "http://localhost:3000";
-
-/* 🎨 Colores “HB” */
+/* 🎨 Colores Hospital */
 const COLORS = {
   header: "#2F4F73",
   background: "#F6F6F6",
   card: "#FFFFFF",
   text: "#0F172A",
   muted: "#64748B",
-  line: "#CFCFCF",
-  pill: "#2F4F73", // botón principal
+  line: "#E5E7EB",
+  primary: "#2F4F73",
+  success: "#059669",
   danger: "#C0392B",
   soft: "#F1F5F9",
-  success: "#059669",
 };
 
 type Profile = {
@@ -44,23 +48,19 @@ type Profile = {
 const PROFILE_KEY = "hb_profile_v1";
 
 export default function EmergenciaScreen() {
-  // ✅ perfil guardado (autocompleta)
   const [profile, setProfile] = useState<Profile | null>(null);
   const [editingProfile, setEditingProfile] = useState(false);
 
-  // campos del perfil (solo se editan una vez)
   const [nombre, setNombre] = useState("");
   const [socio, setSocio] = useState("");
   const [telefono, setTelefono] = useState("");
 
-  // ✅ lo único que escribe el paciente siempre
   const [symptoms, setSymptoms] = useState("");
   const [observations, setObservations] = useState("");
 
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [loading, setLoading] = useState(false);
 
-  // 1) Cargar perfil al abrir pantalla
   useEffect(() => {
     (async () => {
       try {
@@ -70,7 +70,7 @@ export default function EmergenciaScreen() {
           setProfile(p);
           setEditingProfile(false);
         } else {
-          setEditingProfile(true); // si no hay perfil, pedirlo una vez
+          setEditingProfile(true);
         }
       } catch {
         setEditingProfile(true);
@@ -82,10 +82,8 @@ export default function EmergenciaScreen() {
 
   const disabledSend = !profile || !symptoms.trim() || loading;
   const showProfileForm = editingProfile;
-
   const profileDisplay = useMemo(() => profile, [profile]);
 
-  // 2) Guardar perfil (una sola vez)
   const onSaveProfile = async () => {
     if (!nombre.trim() || !socio.trim()) {
       Alert.alert("Faltan datos", "Completá nombre y número de socio.");
@@ -103,15 +101,9 @@ export default function EmergenciaScreen() {
     setEditingProfile(false);
   };
 
-  // 3) Enviar emergencia (solo síntomas/observaciones)
   const onSend = async () => {
-    if (!profile) {
-      Alert.alert("Falta perfil", "Primero guardá tu nombre y número de socio.");
-      return;
-    }
-
-    if (!symptoms.trim()) {
-      Alert.alert("Faltan datos", "Completá síntomas.");
+    if (!profile || !symptoms.trim()) {
+      Alert.alert("Faltan datos", "Completá los síntomas.");
       return;
     }
 
@@ -119,11 +111,10 @@ export default function EmergenciaScreen() {
 
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
-
       if (status !== "granted") {
         Alert.alert(
-          "Ubicación desactivada",
-          "Necesitamos tu ubicación para estimar tu llegada."
+          "Ubicación requerida",
+          "Necesitamos tu ubicación para estimar la llegada."
         );
         return;
       }
@@ -144,13 +135,11 @@ export default function EmergenciaScreen() {
       const payload = {
         socio: profile.socio,
         nombre: profile.nombre,
-        telefono: profile.telefono, // opcional
+        telefono: profile.telefono,
         sintomas: symptoms.trim(),
-        observaciones: observations.trim(), // ✅ agregado
+        observaciones: observations.trim(),
         lat: loc.coords.latitude,
         lng: loc.coords.longitude,
-
-        // extras (MVP)
         distanceKm: Number(km.toFixed(2)),
         etaMin,
       };
@@ -161,37 +150,21 @@ export default function EmergenciaScreen() {
         body: JSON.stringify(payload),
       });
 
-      const text = await res.text();
-
       if (!res.ok) {
-        Alert.alert("Error backend", `${res.status}\n${text}`);
-        return;
-      }
-
-      let data: any = {};
-      try {
-        data = JSON.parse(text);
-      } catch {
-        Alert.alert("Respuesta inesperada", "El backend no devolvió JSON:\n" + text);
-        return;
+        const text = await res.text();
+        throw new Error(text);
       }
 
       Alert.alert(
         "Emergencia enviada",
-        `${data.nombre ?? payload.nombre} (Socio ${data.socio ?? payload.socio})
-Síntomas: ${data.sintomas ?? payload.sintomas}
-
-Se encuentra a ~${data.etaMin ?? etaMin} minutos del hospital.
-Hora de recepción: ${data.receivedAt ?? data.createdAt ?? "-"}`
+        "La recepción del Hospital Británico ya recibió tu emergencia."
       );
 
-      // limpiar SOLO lo que escribe el paciente
       setSymptoms("");
       setObservations("");
-
       router.back();
     } catch (e: any) {
-      Alert.alert("Error real", e?.message ?? String(e));
+      Alert.alert("Error", e?.message ?? "No se pudo enviar la emergencia");
     } finally {
       setLoading(false);
     }
@@ -199,124 +172,130 @@ Hora de recepción: ${data.receivedAt ?? data.createdAt ?? "-"}`
 
   if (loadingProfile) {
     return (
-      <View style={[styles.screen, { justifyContent: "center" }]}>
+      <View style={[styles.center, { backgroundColor: COLORS.background }]}>
         <ActivityIndicator />
       </View>
     );
   }
 
   return (
-    <View style={styles.screen}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Emergencia</Text>
-        <Text style={styles.headerSubtitle}>Hospital Británico</Text>
-      </View>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: COLORS.background }}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+    >
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerStyle={styles.screen}
+      >
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Emergencia</Text>
+          <Text style={styles.headerSubtitle}>Hospital Británico</Text>
+        </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Nueva Emergencia</Text>
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Nueva Emergencia</Text>
 
-        {/* PERFIL */}
-        {showProfileForm ? (
-          <>
-            <Text style={styles.sectionTitle}>Tus datos (solo una vez)</Text>
+          {showProfileForm ? (
+            <>
+              <Text style={styles.sectionTitle}>Tus datos (solo una vez)</Text>
 
-            <Field
-              label="Nombre"
-              required
-              value={nombre}
-              onChangeText={setNombre}
-              placeholder="Ej: Nicolás Giordano"
-            />
+              <Field
+                label="Nombre"
+                required
+                value={nombre}
+                onChangeText={setNombre}
+                placeholder="Ej: Nicolás Giordano"
+              />
 
-            <Field
-              label="Número de socio"
-              required
-              value={socio}
-              onChangeText={setSocio}
-              placeholder="Ej: 4171"
-            />
+              <Field
+                label="Número de socio"
+                required
+                value={socio}
+                onChangeText={setSocio}
+                placeholder="Ej: 4171"
+              />
 
-            <Field
-              label="Teléfono (opcional)"
-              value={telefono}
-              onChangeText={setTelefono}
-              placeholder="Ej: 09xxxxxxx"
-            />
+              <Field
+                label="Teléfono (opcional)"
+                value={telefono}
+                onChangeText={setTelefono}
+                placeholder="Ej: 09xxxxxxx"
+              />
 
-            <Pressable onPress={onSaveProfile} style={styles.primaryButton}>
-              <Text style={styles.primaryText}>Guardar datos</Text>
-            </Pressable>
-          </>
-        ) : (
-          <>
-            <Text style={styles.sectionTitle}>Datos del paciente (automático)</Text>
-
-            <ReadOnlyRow label="Nombre" value={profileDisplay?.nombre ?? "-"} />
-            <ReadOnlyRow label="N° Socio" value={profileDisplay?.socio ?? "-"} />
-            <ReadOnlyRow
-              label="Teléfono"
-              value={profileDisplay?.telefono ? profileDisplay.telefono : "—"}
-            />
-
-            <Pressable
-              onPress={() => {
-                // cargar a inputs y permitir edición
-                setNombre(profileDisplay?.nombre ?? "");
-                setSocio(profileDisplay?.socio ?? "");
-                setTelefono(profileDisplay?.telefono ?? "");
-                setEditingProfile(true);
-              }}
-              style={styles.secondaryButton}
-            >
-              <Text style={styles.secondaryText}>Editar mis datos</Text>
-            </Pressable>
-
-            <View style={styles.divider} />
-
-            {/* FORM EMERGENCIA (lo único editable siempre) */}
-            <Field
-              label="Síntomas"
-              required
-              value={symptoms}
-              onChangeText={setSymptoms}
-              placeholder="Ej: dolor de pecho, falta de aire…"
-              multiline
-            />
-
-            <Field
-              label="Observaciones"
-              value={observations}
-              onChangeText={setObservations}
-              placeholder="Ej: alergias, medicación, antecedentes…"
-              multiline
-            />
-          </>
-        )}
-      </View>
-
-      {/* Botón Enviar */}
-      {!showProfileForm && (
-        <Pressable
-          onPress={onSend}
-          disabled={disabledSend}
-          style={[styles.sendButton, disabledSend && styles.pillDisabled]}
-        >
-          {loading ? (
-            <ActivityIndicator color="white" />
+              <Pressable onPress={onSaveProfile} style={styles.primaryButton}>
+                <Text style={styles.primaryText}>Guardar datos</Text>
+              </Pressable>
+            </>
           ) : (
-            <Text style={styles.pillText}>Enviar Emergencia</Text>
-          )}
-        </Pressable>
-      )}
+            <>
+              <Text style={styles.sectionTitle}>Datos del paciente</Text>
 
-      <Pressable onPress={() => router.back()} style={styles.link}>
-        <Text style={styles.linkText}>Cancelar</Text>
-      </Pressable>
-    </View>
+              <ReadOnlyRow label="Nombre" value={profileDisplay?.nombre ?? "-"} />
+              <ReadOnlyRow label="N° Socio" value={profileDisplay?.socio ?? "-"} />
+              <ReadOnlyRow
+                label="Teléfono"
+                value={profileDisplay?.telefono || "—"}
+              />
+
+              <Pressable
+                onPress={() => {
+                  setNombre(profileDisplay?.nombre ?? "");
+                  setSocio(profileDisplay?.socio ?? "");
+                  setTelefono(profileDisplay?.telefono ?? "");
+                  setEditingProfile(true);
+                }}
+                style={styles.secondaryButton}
+              >
+                <Text style={styles.secondaryText}>Editar mis datos</Text>
+              </Pressable>
+
+              <View style={styles.divider} />
+
+              <Field
+                label="Síntomas"
+                required
+                value={symptoms}
+                onChangeText={setSymptoms}
+                placeholder="Ej: dolor de pecho, falta de aire…"
+                multiline
+              />
+
+              <Field
+                label="Observaciones"
+                value={observations}
+                onChangeText={setObservations}
+                placeholder="Ej: alergias, medicación, antecedentes…"
+                multiline
+              />
+            </>
+          )}
+        </View>
+
+        {!showProfileForm && (
+          <Pressable
+            onPress={onSend}
+            disabled={disabledSend}
+            style={[styles.sendButton, disabledSend && styles.disabled]}
+          >
+            {loading ? (
+              <ActivityIndicator color="white" />
+            ) : (
+              <Text style={styles.sendText}>Enviar Emergencia</Text>
+            )}
+          </Pressable>
+        )}
+
+        <Pressable onPress={() => router.back()} style={styles.link}>
+          <Text style={styles.linkText}>Cancelar</Text>
+        </Pressable>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
-/* ---------- COMPONENTES UI ---------- */
+/* ---------- UI ---------- */
 
 function ReadOnlyRow({ label, value }: { label: string; value: string }) {
   return (
@@ -347,13 +326,13 @@ function Field({
       <Text style={styles.label}>
         {label} {required && <Text style={styles.req}>*</Text>}
       </Text>
-
       <TextInput
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
         placeholderTextColor={COLORS.line}
         multiline={multiline}
+        textAlignVertical={multiline ? "top" : "center"}
         style={[styles.input, multiline && styles.inputMultiline]}
       />
     </View>
@@ -364,30 +343,21 @@ function Field({
 
 const styles = StyleSheet.create({
   screen: {
-    flex: 1,
-    backgroundColor: COLORS.background,
     paddingHorizontal: 18,
     paddingTop: 16,
+    paddingBottom: 160,
     gap: 14,
   },
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
 
   header: {
     backgroundColor: COLORS.header,
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: "center",
-    justifyContent: "center",
   },
-  headerTitle: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "800",
-  },
-  headerSubtitle: {
-    color: "rgba(255,255,255,0.75)",
-    marginTop: 4,
-    fontWeight: "600",
-  },
+  headerTitle: { color: "white", fontSize: 18, fontWeight: "800" },
+  headerSubtitle: { color: "rgba(255,255,255,0.75)", marginTop: 4 },
 
   card: {
     backgroundColor: COLORS.card,
@@ -396,97 +366,51 @@ const styles = StyleSheet.create({
     shadowColor: "#000",
     shadowOpacity: 0.08,
     shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
     elevation: 3,
   },
 
-  cardTitle: {
-    color: COLORS.text,
-    fontSize: 16,
-    fontWeight: "800",
-    marginBottom: 8,
-  },
+  cardTitle: { fontSize: 16, fontWeight: "800", marginBottom: 8 },
+  sectionTitle: { color: COLORS.muted, fontWeight: "800", marginBottom: 10 },
+  divider: { height: 1, backgroundColor: COLORS.line, marginVertical: 12 },
 
-  sectionTitle: {
-    color: COLORS.muted,
-    fontWeight: "800",
-    marginBottom: 10,
-  },
-
-  divider: {
-    height: 1,
-    backgroundColor: "#E5E7EB",
-    marginVertical: 12,
-  },
-
-  label: {
-    color: COLORS.text,
-    fontWeight: "800",
-    marginBottom: 6,
-  },
+  label: { fontWeight: "800", marginBottom: 6 },
   req: { color: COLORS.danger },
 
   input: {
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: COLORS.line,
     borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: COLORS.text,
+    padding: 12,
     backgroundColor: "white",
-    fontSize: 14,
   },
-  inputMultiline: {
-    minHeight: 90,
-    textAlignVertical: "top",
-  },
+  inputMultiline: { minHeight: 100 },
 
   readonly: {
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
     backgroundColor: COLORS.soft,
     borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    padding: 12,
     marginBottom: 10,
   },
-  readonlyLabel: {
-    color: COLORS.muted,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  readonlyValue: {
-    color: COLORS.text,
-    fontSize: 15,
-    fontWeight: "800",
-    marginTop: 4,
-  },
+  readonlyLabel: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+  readonlyValue: { fontSize: 15, fontWeight: "800", marginTop: 4 },
 
   primaryButton: {
-    backgroundColor: COLORS.header,
+    backgroundColor: COLORS.primary,
     borderRadius: 16,
     paddingVertical: 12,
     alignItems: "center",
-    marginTop: 6,
   },
-  primaryText: {
-    color: "white",
-    fontWeight: "900",
-  },
+  primaryText: { color: "white", fontWeight: "900" },
 
   secondaryButton: {
-    backgroundColor: "#F1F5F9",
+    backgroundColor: COLORS.soft,
     borderRadius: 16,
     paddingVertical: 12,
     alignItems: "center",
-    marginTop: 6,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: COLORS.line,
   },
-  secondaryText: {
-    color: COLORS.header,
-    fontWeight: "900",
-  },
+  secondaryText: { color: COLORS.primary, fontWeight: "900" },
 
   sendButton: {
     backgroundColor: COLORS.success,
@@ -494,16 +418,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: "center",
   },
-  pillDisabled: { opacity: 0.6 },
-  pillText: {
-    color: "white",
-    fontSize: 16,
-    fontWeight: "800",
-  },
+  sendText: { color: "white", fontSize: 16, fontWeight: "800" },
+  disabled: { opacity: 0.6 },
 
   link: { alignItems: "center", paddingTop: 6 },
-  linkText: {
-    color: COLORS.header,
-    fontWeight: "700",
-  },
+  linkText: { color: COLORS.primary, fontWeight: "700" },
 });
