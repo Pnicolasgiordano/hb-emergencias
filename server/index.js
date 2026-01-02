@@ -66,8 +66,18 @@ app.patch("/emergencies/:id/status", (req, res) => {
   const idx = emergencies.findIndex((e) => e.id === id);
   if (idx === -1) return res.status(404).json({ error: "No encontrado" });
 
-  emergencies[idx].status = status;
-  res.json(emergencies[idx]);
+emergencies[idx].status = status;
+
+if (status === "en_atencion") {
+  emergencies[idx].takenAt = new Date().toISOString();
+}
+
+if (status === "finalizado") {
+  emergencies[idx].closedAt = new Date().toISOString();
+}
+
+res.json(emergencies[idx]);
+
 });
 
 app.listen(3000, () => {

@@ -1,21 +1,26 @@
+import Constants from "expo-constants";
 import * as Location from "expo-location";
 import { router } from "expo-router";
 import React, { useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Pressable,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { HOSPITAL } from "../constants/hospital";
 import { distanceKm, estimateEtaMinutes } from "../utils/eta";
 
-/* 🔗 BACKEND */
-const API_BASE = "http://172.20.10.2:3000"; 
-// ⬆️ 
+/* 🔗 BACKEND (AUTO) */
+const expoHost = Constants.expoConfig?.hostUri ?? "";
+const derivedHost = expoHost.replace(/^exp:\/\//, "").split(":")[0];
+
+const API_BASE = derivedHost
+  ? `http://${derivedHost}:3000`
+  : "http://localhost:3000";
 
 const COLORS = {
   header: "#3C5C7E",
@@ -33,23 +38,18 @@ export default function EmergenciaScreen() {
   const [symptoms, setSymptoms] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const disabled =
-    !name.trim() || !memberNumber.trim() || !symptoms.trim();
+  const disabled = !name.trim() || !memberNumber.trim() || !symptoms.trim();
 
   const onSend = async () => {
     if (disabled) {
-      Alert.alert(
-        "Faltan datos",
-        "Completá nombre, número de socio y síntomas."
-      );
+      Alert.alert("Faltan datos", "Completá nombre, número de socio y síntomas.");
       return;
     }
 
     setLoading(true);
 
     try {
-      const { status } =
-        await Location.requestForegroundPermissionsAsync();
+      const { status } = await Location.requestForegroundPermissionsAsync();
 
       if (status !== "granted") {
         Alert.alert(
@@ -62,26 +62,25 @@ export default function EmergenciaScreen() {
       const loc = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
       });
-const km = distanceKm(
-  loc.coords.latitude,
-  loc.coords.longitude,
-  HOSPITAL.lat,
-  HOSPITAL.lng
-);
 
-const etaMin = estimateEtaMinutes(km);
+      const km = distanceKm(
+        loc.coords.latitude,
+        loc.coords.longitude,
+        HOSPITAL.lat,
+        HOSPITAL.lng
+      );
 
-     const payload = {
-  name: name.trim(),
-  memberNumber: memberNumber.trim(),
-  symptoms: symptoms.trim(),
-  location: {
-    latitude: loc.coords.latitude,
-    longitude: loc.coords.longitude,
-    accuracy: loc.coords.accuracy,
-  },
+      const etaMin = estimateEtaMinutes(km);
+const payload = {
+  socio: memberNumber.trim(),
+  nombre: name.trim(),
+  sintomas: symptoms.trim(),
+  lat: loc.coords.latitude,
+  lng: loc.coords.longitude,
+
+  // extras (si el backend no los usa, no molesta)
   distanceKm: Number(km.toFixed(2)),
-  etaMin: etaMin,
+  etaMin,
 };
 
 
@@ -91,27 +90,36 @@ const etaMin = estimateEtaMinutes(km);
         body: JSON.stringify(payload),
       });
 
+      // Leemos SIEMPRE el texto para poder mostrar errores reales
+      const text = await res.text();
+
       if (!res.ok) {
-        throw new Error("Error enviando emergencia");
+        Alert.alert("Error backend", `${res.status}\n${text}`);
+        return;
       }
 
-      const data = await res.json();
+      // Intentamos parsear JSON
+      let data: any = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        Alert.alert("Respuesta inesperada", "El backend no devolvió JSON:\n" + text);
+        return;
+      }
 
-      Alert.alert(
-        "Emergencia enviada",
-        `${data.name} (Socio ${data.memberNumber})
-Síntomas: ${data.symptoms}
+    Alert.alert(
+  "Emergencia enviada",
+  `${data.nombre ?? payload.nombre} (Socio ${data.socio ?? payload.socio})
+Síntomas: ${data.sintomas ?? payload.sintomas}
 
-Se encuentra a ~${data.etaMinutes} minutos del hospital.
-Hora de recepción: ${data.receivedAt}`
-      );
+Se encuentra a ~${data.etaMin ?? etaMin} minutos del hospital.
+Hora de recepción: ${data.receivedAt ?? data.createdAt ?? "-"}`
+);
+
 
       router.back();
-    } catch (e) {
-      Alert.alert(
-        "Error",
-        "No se pudo enviar la emergencia. Revisá backend e IP."
-      );
+    } catch (e: any) {
+      Alert.alert("Error real", e?.message ?? String(e));
     } finally {
       setLoading(false);
     }
@@ -153,22 +161,12 @@ Hora de recepción: ${data.receivedAt}`
       <Pressable
         onPress={onSend}
         disabled={disabled || loading}
-        style={[
-          styles.pillButton,
-          (disabled || loading) && styles.pillDisabled,
-        ]}
+        style={[styles.pillButton, (disabled || loading) && styles.pillDisabled]}
       >
-        {loading ? (
-          <ActivityIndicator color="white" />
-        ) : (
-          <Text style={styles.pillText}>Enviar</Text>
-        )}
+        {loading ? <ActivityIndicator color="white" /> : <Text style={styles.pillText}>Enviar</Text>}
       </Pressable>
 
-      <Pressable
-        onPress={() => router.back()}
-        style={styles.link}
-      >
+      <Pressable onPress={() => router.back()} style={styles.link}>
         <Text style={styles.linkText}>Cancelar</Text>
       </Pressable>
     </View>
@@ -204,10 +202,7 @@ function Field({
         placeholder={placeholder}
         placeholderTextColor={COLORS.line}
         multiline={multiline}
-        style={[
-          styles.input,
-          multiline && styles.inputMultiline,
-        ]}
+        style={[styles.input, multiline && styles.inputMultiline]}
       />
 
       <View style={styles.underline} />
