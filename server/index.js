@@ -83,3 +83,22 @@ res.json(emergencies[idx]);
 app.listen(3000, () => {
   console.log("API running on http://localhost:3000");
 });
+
+/**
+ * DELETE borrar emergencia (solo finalizadas)
+ */
+app.delete("/emergencies/:id", (req, res) => {
+  const { id } = req.params;
+
+  const idx = emergencies.findIndex((e) => e.id === id);
+  if (idx === -1) return res.status(404).json({ error: "No encontrado" });
+
+  if (emergencies[idx].status !== "finalizado") {
+    return res
+      .status(400)
+      .json({ error: "Solo se pueden borrar emergencias finalizadas" });
+  }
+
+  emergencies.splice(idx, 1);
+  res.json({ ok: true });
+});
