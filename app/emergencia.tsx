@@ -1,7 +1,8 @@
 import Constants from "expo-constants";
 import * as Location from "expo-location";
 import { router } from "expo-router";
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   ActivityIndicator,
   Alert,
@@ -18,31 +19,99 @@ import { distanceKm, estimateEtaMinutes } from "../utils/eta";
 const expoHost = Constants.expoConfig?.hostUri ?? "";
 const derivedHost = expoHost.replace(/^exp:\/\//, "").split(":")[0];
 
-const API_BASE = derivedHost
-  ? `http://${derivedHost}:3000`
-  : "http://localhost:3000";
+const API_BASE = derivedHost ? `http://${derivedHost}:3000` : "http://localhost:3000";
 
+/* 🎨 Colores “HB” */
 const COLORS = {
-  header: "#3C5C7E",
+  header: "#2F4F73",
   background: "#F6F6F6",
   card: "#FFFFFF",
-  text: "#1A1A1A",
+  text: "#0F172A",
+  muted: "#64748B",
   line: "#CFCFCF",
-  pill: "#D6D0CC",
+  pill: "#2F4F73", // botón principal
   danger: "#C0392B",
+  soft: "#F1F5F9",
+  success: "#059669",
 };
 
+type Profile = {
+  nombre: string;
+  socio: string;
+  telefono: string;
+};
+
+const PROFILE_KEY = "hb_profile_v1";
+
 export default function EmergenciaScreen() {
-  const [name, setName] = useState("");
-  const [memberNumber, setMemberNumber] = useState("");
+  // ✅ perfil guardado (autocompleta)
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [editingProfile, setEditingProfile] = useState(false);
+
+  // campos del perfil (solo se editan una vez)
+  const [nombre, setNombre] = useState("");
+  const [socio, setSocio] = useState("");
+  const [telefono, setTelefono] = useState("");
+
+  // ✅ lo único que escribe el paciente siempre
   const [symptoms, setSymptoms] = useState("");
+  const [observations, setObservations] = useState("");
+
+  const [loadingProfile, setLoadingProfile] = useState(true);
   const [loading, setLoading] = useState(false);
 
-  const disabled = !name.trim() || !memberNumber.trim() || !symptoms.trim();
+  // 1) Cargar perfil al abrir pantalla
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(PROFILE_KEY);
+        if (raw) {
+          const p = JSON.parse(raw) as Profile;
+          setProfile(p);
+          setEditingProfile(false);
+        } else {
+          setEditingProfile(true); // si no hay perfil, pedirlo una vez
+        }
+      } catch {
+        setEditingProfile(true);
+      } finally {
+        setLoadingProfile(false);
+      }
+    })();
+  }, []);
 
+  const disabledSend = !profile || !symptoms.trim() || loading;
+  const showProfileForm = editingProfile;
+
+  const profileDisplay = useMemo(() => profile, [profile]);
+
+  // 2) Guardar perfil (una sola vez)
+  const onSaveProfile = async () => {
+    if (!nombre.trim() || !socio.trim()) {
+      Alert.alert("Faltan datos", "Completá nombre y número de socio.");
+      return;
+    }
+
+    const p: Profile = {
+      nombre: nombre.trim(),
+      socio: socio.trim(),
+      telefono: telefono.trim(),
+    };
+
+    await AsyncStorage.setItem(PROFILE_KEY, JSON.stringify(p));
+    setProfile(p);
+    setEditingProfile(false);
+  };
+
+  // 3) Enviar emergencia (solo síntomas/observaciones)
   const onSend = async () => {
-    if (disabled) {
-      Alert.alert("Faltan datos", "Completá nombre, número de socio y síntomas.");
+    if (!profile) {
+      Alert.alert("Falta perfil", "Primero guardá tu nombre y número de socio.");
+      return;
+    }
+
+    if (!symptoms.trim()) {
+      Alert.alert("Faltan datos", "Completá síntomas.");
       return;
     }
 
@@ -71,18 +140,20 @@ export default function EmergenciaScreen() {
       );
 
       const etaMin = estimateEtaMinutes(km);
-const payload = {
-  socio: memberNumber.trim(),
-  nombre: name.trim(),
-  sintomas: symptoms.trim(),
-  lat: loc.coords.latitude,
-  lng: loc.coords.longitude,
 
-  // extras (si el backend no los usa, no molesta)
-  distanceKm: Number(km.toFixed(2)),
-  etaMin,
-};
+      const payload = {
+        socio: profile.socio,
+        nombre: profile.nombre,
+        telefono: profile.telefono, // opcional
+        sintomas: symptoms.trim(),
+        observaciones: observations.trim(), // ✅ agregado
+        lat: loc.coords.latitude,
+        lng: loc.coords.longitude,
 
+        // extras (MVP)
+        distanceKm: Number(km.toFixed(2)),
+        etaMin,
+      };
 
       const res = await fetch(`${API_BASE}/emergencies`, {
         method: "POST",
@@ -90,7 +161,6 @@ const payload = {
         body: JSON.stringify(payload),
       });
 
-      // Leemos SIEMPRE el texto para poder mostrar errores reales
       const text = await res.text();
 
       if (!res.ok) {
@@ -98,7 +168,6 @@ const payload = {
         return;
       }
 
-      // Intentamos parsear JSON
       let data: any = {};
       try {
         data = JSON.parse(text);
@@ -107,15 +176,18 @@ const payload = {
         return;
       }
 
-    Alert.alert(
-  "Emergencia enviada",
-  `${data.nombre ?? payload.nombre} (Socio ${data.socio ?? payload.socio})
+      Alert.alert(
+        "Emergencia enviada",
+        `${data.nombre ?? payload.nombre} (Socio ${data.socio ?? payload.socio})
 Síntomas: ${data.sintomas ?? payload.sintomas}
 
 Se encuentra a ~${data.etaMin ?? etaMin} minutos del hospital.
 Hora de recepción: ${data.receivedAt ?? data.createdAt ?? "-"}`
-);
+      );
 
+      // limpiar SOLO lo que escribe el paciente
+      setSymptoms("");
+      setObservations("");
 
       router.back();
     } catch (e: any) {
@@ -125,46 +197,117 @@ Hora de recepción: ${data.receivedAt ?? data.createdAt ?? "-"}`
     }
   };
 
+  if (loadingProfile) {
+    return (
+      <View style={[styles.screen, { justifyContent: "center" }]}>
+        <ActivityIndicator />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Nueva Emergencia</Text>
+        <Text style={styles.headerTitle}>Emergencia</Text>
+        <Text style={styles.headerSubtitle}>Hospital Británico</Text>
       </View>
 
       <View style={styles.card}>
-        <Field
-          label="Nombre"
-          required
-          value={name}
-          onChangeText={setName}
-          placeholder="Ej: Nicolás Giordano"
-        />
+        <Text style={styles.cardTitle}>Nueva Emergencia</Text>
 
-        <Field
-          label="Número de socio"
-          required
-          value={memberNumber}
-          onChangeText={setMemberNumber}
-          placeholder="Ej: 123456"
-        />
+        {/* PERFIL */}
+        {showProfileForm ? (
+          <>
+            <Text style={styles.sectionTitle}>Tus datos (solo una vez)</Text>
 
-        <Field
-          label="Síntomas"
-          required
-          value={symptoms}
-          onChangeText={setSymptoms}
-          placeholder="Ej: dolor de pecho, falta de aire…"
-          multiline
-        />
+            <Field
+              label="Nombre"
+              required
+              value={nombre}
+              onChangeText={setNombre}
+              placeholder="Ej: Nicolás Giordano"
+            />
+
+            <Field
+              label="Número de socio"
+              required
+              value={socio}
+              onChangeText={setSocio}
+              placeholder="Ej: 4171"
+            />
+
+            <Field
+              label="Teléfono (opcional)"
+              value={telefono}
+              onChangeText={setTelefono}
+              placeholder="Ej: 09xxxxxxx"
+            />
+
+            <Pressable onPress={onSaveProfile} style={styles.primaryButton}>
+              <Text style={styles.primaryText}>Guardar datos</Text>
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <Text style={styles.sectionTitle}>Datos del paciente (automático)</Text>
+
+            <ReadOnlyRow label="Nombre" value={profileDisplay?.nombre ?? "-"} />
+            <ReadOnlyRow label="N° Socio" value={profileDisplay?.socio ?? "-"} />
+            <ReadOnlyRow
+              label="Teléfono"
+              value={profileDisplay?.telefono ? profileDisplay.telefono : "—"}
+            />
+
+            <Pressable
+              onPress={() => {
+                // cargar a inputs y permitir edición
+                setNombre(profileDisplay?.nombre ?? "");
+                setSocio(profileDisplay?.socio ?? "");
+                setTelefono(profileDisplay?.telefono ?? "");
+                setEditingProfile(true);
+              }}
+              style={styles.secondaryButton}
+            >
+              <Text style={styles.secondaryText}>Editar mis datos</Text>
+            </Pressable>
+
+            <View style={styles.divider} />
+
+            {/* FORM EMERGENCIA (lo único editable siempre) */}
+            <Field
+              label="Síntomas"
+              required
+              value={symptoms}
+              onChangeText={setSymptoms}
+              placeholder="Ej: dolor de pecho, falta de aire…"
+              multiline
+            />
+
+            <Field
+              label="Observaciones"
+              value={observations}
+              onChangeText={setObservations}
+              placeholder="Ej: alergias, medicación, antecedentes…"
+              multiline
+            />
+          </>
+        )}
       </View>
 
-      <Pressable
-        onPress={onSend}
-        disabled={disabled || loading}
-        style={[styles.pillButton, (disabled || loading) && styles.pillDisabled]}
-      >
-        {loading ? <ActivityIndicator color="white" /> : <Text style={styles.pillText}>Enviar</Text>}
-      </Pressable>
+      {/* Botón Enviar */}
+      {!showProfileForm && (
+        <Pressable
+          onPress={onSend}
+          disabled={disabledSend}
+          style={[styles.sendButton, disabledSend && styles.pillDisabled]}
+        >
+          {loading ? (
+            <ActivityIndicator color="white" />
+          ) : (
+            <Text style={styles.pillText}>Enviar Emergencia</Text>
+          )}
+        </Pressable>
+      )}
 
       <Pressable onPress={() => router.back()} style={styles.link}>
         <Text style={styles.linkText}>Cancelar</Text>
@@ -173,7 +316,16 @@ Hora de recepción: ${data.receivedAt ?? data.createdAt ?? "-"}`
   );
 }
 
-/* ---------- COMPONENTE INPUT ---------- */
+/* ---------- COMPONENTES UI ---------- */
+
+function ReadOnlyRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.readonly}>
+      <Text style={styles.readonlyLabel}>{label}</Text>
+      <Text style={styles.readonlyValue}>{value}</Text>
+    </View>
+  );
+}
 
 function Field({
   label,
@@ -191,7 +343,7 @@ function Field({
   multiline?: boolean;
 }) {
   return (
-    <View style={{ marginBottom: 18 }}>
+    <View style={{ marginBottom: 16 }}>
       <Text style={styles.label}>
         {label} {required && <Text style={styles.req}>*</Text>}
       </Text>
@@ -204,8 +356,6 @@ function Field({
         multiline={multiline}
         style={[styles.input, multiline && styles.inputMultiline]}
       />
-
-      <View style={styles.underline} />
     </View>
   );
 }
@@ -222,16 +372,21 @@ const styles = StyleSheet.create({
   },
 
   header: {
-    height: 54,
     backgroundColor: COLORS.header,
-    borderRadius: 12,
+    borderRadius: 14,
+    paddingVertical: 14,
     alignItems: "center",
     justifyContent: "center",
   },
   headerTitle: {
     color: "white",
     fontSize: 18,
-    fontWeight: "700",
+    fontWeight: "800",
+  },
+  headerSubtitle: {
+    color: "rgba(255,255,255,0.75)",
+    marginTop: 4,
+    fontWeight: "600",
   },
 
   card: {
@@ -245,44 +400,110 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
 
+  cardTitle: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: "800",
+    marginBottom: 8,
+  },
+
+  sectionTitle: {
+    color: COLORS.muted,
+    fontWeight: "800",
+    marginBottom: 10,
+  },
+
+  divider: {
+    height: 1,
+    backgroundColor: "#E5E7EB",
+    marginVertical: 12,
+  },
+
   label: {
     color: COLORS.text,
-    fontWeight: "700",
+    fontWeight: "800",
     marginBottom: 6,
   },
   req: { color: COLORS.danger },
 
   input: {
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     color: COLORS.text,
-    paddingVertical: 8,
+    backgroundColor: "white",
     fontSize: 14,
   },
   inputMultiline: {
     minHeight: 90,
     textAlignVertical: "top",
   },
-  underline: {
-    height: 1,
-    backgroundColor: COLORS.line,
-    marginTop: 2,
+
+  readonly: {
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: COLORS.soft,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  readonlyLabel: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  readonlyValue: {
+    color: COLORS.text,
+    fontSize: 15,
+    fontWeight: "800",
+    marginTop: 4,
   },
 
-  pillButton: {
-    backgroundColor: COLORS.pill,
+  primaryButton: {
+    backgroundColor: COLORS.header,
+    borderRadius: 16,
+    paddingVertical: 12,
+    alignItems: "center",
+    marginTop: 6,
+  },
+  primaryText: {
+    color: "white",
+    fontWeight: "900",
+  },
+
+  secondaryButton: {
+    backgroundColor: "#F1F5F9",
+    borderRadius: 16,
+    paddingVertical: 12,
+    alignItems: "center",
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  secondaryText: {
+    color: COLORS.header,
+    fontWeight: "900",
+  },
+
+  sendButton: {
+    backgroundColor: COLORS.success,
     borderRadius: 24,
     paddingVertical: 14,
     alignItems: "center",
   },
-  pillDisabled: { opacity: 0.65 },
+  pillDisabled: { opacity: 0.6 },
   pillText: {
     color: "white",
     fontSize: 16,
-    fontWeight: "600",
+    fontWeight: "800",
   },
 
   link: { alignItems: "center", paddingTop: 6 },
   linkText: {
     color: COLORS.header,
-    fontWeight: "600",
+    fontWeight: "700",
   },
 });
